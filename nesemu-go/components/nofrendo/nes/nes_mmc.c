@@ -207,7 +207,6 @@ void mmc_reset(void)
    mmc_setpages();
 
    ppu_setlatchfunc(NULL);
-   ppu_setvromswitch(NULL);
 
    if (mmc.intf->init)
       mmc.intf->init();

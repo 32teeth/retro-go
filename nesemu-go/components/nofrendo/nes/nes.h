@@ -42,6 +42,11 @@
 #define  MAX_MEM_HANDLERS     32
 #define  LAST_MEMORY_HANDLER  { -1, -1, NULL }
 
+#define  NES_CLOCK_DIVIDER    12
+#define  NES_MASTER_CLOCK     (236250000 / 11)
+#define  NES_SCANLINE_CYCLES  (1364.0 / NES_CLOCK_DIVIDER)
+#define  NES_FIQ_PERIOD       (NES_MASTER_CLOCK / NES_CLOCK_DIVIDER / 60)
+
 typedef enum
 {
    NES_AUTO,

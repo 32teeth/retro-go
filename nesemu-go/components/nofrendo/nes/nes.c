@@ -35,18 +35,11 @@
 #include <nes_rom.h>
 #include <nes_mmc.h>
 #include <nofrendo.h>
-#include <nesstate.h>
+#include <nes_input.h>
+#include <nes_state.h>
 
 #include <esp_attr.h>
-#include <esp_system.h>
 #include <odroid_system.h>
-
-
-// #define  NES_CLOCK_DIVIDER    12
-// #define  NES_MASTER_CLOCK     (236250000 / 11)
-// #define  NES_SCANLINE_CYCLES  (1364.0 / NES_CLOCK_DIVIDER)
-// #define  NES_FIQ_PERIOD       (NES_MASTER_CLOCK / NES_CLOCK_DIVIDER / 60)
-
 
 static nes_t nes;
 
@@ -83,136 +76,83 @@ static uint8 read_protect(uint32 address)
 /* read/write handlers for standard NES */
 static nes6502_memread default_readhandler[] =
 {
-   { 0x0800, 0x1FFF, ram_read },
-   { 0x2000, 0x3FFF, ppu_read },
-   { 0x4000, 0x4015, apu_read },
-   { 0x4016, 0x4017, ppu_readhigh },
+   { 0x0800, 0x1FFF, ram_read   },
+   { 0x2000, 0x3FFF, ppu_read   },
+   { 0x4000, 0x4015, apu_read   },
+   { 0x4016, 0x4017, input_read },
    LAST_MEMORY_HANDLER
 };
 
 static nes6502_memwrite default_writehandler[] =
 {
-   { 0x0800, 0x1FFF, ram_write },
-   { 0x2000, 0x3FFF, ppu_write },
-   { 0x4000, 0x4013, apu_write },
-   { 0x4015, 0x4015, apu_write },
-   { 0x4017, 0x4017, apu_write },
-   { 0x4014, 0x4016, ppu_writehigh },
+   { 0x0800, 0x1FFF, ram_write   },
+   { 0x2000, 0x3FFF, ppu_write   },
+   { 0x4014, 0x4014, ppu_write   },
+   { 0x4016, 0x4016, input_write },
+   { 0x4000, 0x4017, apu_write   },
    LAST_MEMORY_HANDLER
 };
 
 /* this big nasty boy sets up the address handlers that the CPU uses */
 static void build_address_handlers(nes_t *machine)
 {
-   int count, num_handlers = 0;
-   mapintf_t *intf;
-
    ASSERT(machine);
-   intf = machine->mmc->intf;
+
+   int num_read_handlers = 0, num_write_handlers = 0;
+   mapintf_t *intf = machine->mmc->intf;
 
    memset(machine->readhandler, 0, sizeof(machine->readhandler));
    memset(machine->writehandler, 0, sizeof(machine->writehandler));
 
-   for (count = 0; num_handlers < MAX_MEM_HANDLERS; count++, num_handlers++)
+   for (int i = 0, rc = 0, wc = 0; i < MAX_MEM_HANDLERS; i++)
    {
-      if (NULL == default_readhandler[count].read_func)
-         break;
+      if (default_readhandler[rc].read_func)
+         memcpy(&machine->readhandler[num_read_handlers++], &default_readhandler[rc++],
+               sizeof(nes6502_memread));
 
-      memcpy(&machine->readhandler[num_handlers], &default_readhandler[count],
-             sizeof(nes6502_memread));
+      if (default_writehandler[wc].write_func)
+         memcpy(&machine->writehandler[num_write_handlers++], &default_writehandler[wc++],
+               sizeof(nes6502_memwrite));
    }
 
-   if (intf->sound_ext)
+   for (int i = 0, rc = 0, wc = 0; i < MAX_MEM_HANDLERS; i++)
    {
-      if (NULL != intf->sound_ext->mem_read)
-      {
-         for (count = 0; num_handlers < MAX_MEM_HANDLERS; count++, num_handlers++)
-         {
-            if (NULL == intf->sound_ext->mem_read[count].read_func)
-               break;
+      if (intf->mem_read && intf->mem_read[rc].read_func)
+         memcpy(&machine->readhandler[num_read_handlers++], &intf->mem_read[rc++],
+               sizeof(nes6502_memread));
 
-            memcpy(&machine->readhandler[num_handlers], &intf->sound_ext->mem_read[count],
-                   sizeof(nes6502_memread));
-         }
-      }
+      if (intf->mem_write && intf->mem_write[wc].write_func)
+         memcpy(&machine->writehandler[num_write_handlers++], &intf->mem_write[wc++],
+               sizeof(nes6502_memwrite));
    }
 
-   if (NULL != intf->mem_read)
-   {
-      for (count = 0; num_handlers < MAX_MEM_HANDLERS; count++, num_handlers++)
-      {
-         if (NULL == intf->mem_read[count].read_func)
-            break;
+   /* catch-all for bad reads */
+   machine->readhandler[num_read_handlers].min_range = 0x4018;
+   machine->readhandler[num_read_handlers].max_range = 0x5FFF;
+   machine->readhandler[num_read_handlers].read_func = read_protect;
+   num_read_handlers++;
+   machine->readhandler[num_read_handlers].min_range = -1;
+   machine->readhandler[num_read_handlers].max_range = -1;
+   machine->readhandler[num_read_handlers].read_func = NULL;
+   num_read_handlers++;
 
-         memcpy(&machine->readhandler[num_handlers], &intf->mem_read[count],
-                sizeof(nes6502_memread));
-      }
-   }
-
-   /* TODO: poof! numbers */
-   machine->readhandler[num_handlers].min_range = 0x4018;
-   machine->readhandler[num_handlers].max_range = 0x5FFF;
-   machine->readhandler[num_handlers].read_func = read_protect;
-   num_handlers++;
-   machine->readhandler[num_handlers].min_range = -1;
-   machine->readhandler[num_handlers].max_range = -1;
-   machine->readhandler[num_handlers].read_func = NULL;
-   num_handlers++;
-   ASSERT(num_handlers <= MAX_MEM_HANDLERS);
-
-   num_handlers = 0;
-
-   for (count = 0; num_handlers < MAX_MEM_HANDLERS; count++, num_handlers++)
-   {
-      if (NULL == default_writehandler[count].write_func)
-         break;
-
-      memcpy(&machine->writehandler[num_handlers], &default_writehandler[count],
-             sizeof(nes6502_memwrite));
-   }
-
-   if (intf->sound_ext)
-   {
-      if (NULL != intf->sound_ext->mem_write)
-      {
-         for (count = 0; num_handlers < MAX_MEM_HANDLERS; count++, num_handlers++)
-         {
-            if (NULL == intf->sound_ext->mem_write[count].write_func)
-               break;
-
-            memcpy(&machine->writehandler[num_handlers], &intf->sound_ext->mem_write[count],
-                   sizeof(nes6502_memwrite));
-         }
-      }
-   }
-
-   if (NULL != intf->mem_write)
-   {
-      for (count = 0; num_handlers < MAX_MEM_HANDLERS; count++, num_handlers++)
-      {
-         if (NULL == intf->mem_write[count].write_func)
-            break;
-
-         memcpy(&machine->writehandler[num_handlers], &intf->mem_write[count],
-                sizeof(nes6502_memwrite));
-      }
-   }
+   ASSERT(num_read_handlers <= MAX_MEM_HANDLERS);
 
    /* catch-all for bad writes */
-   /* TODO: poof! numbers */
-   machine->writehandler[num_handlers].min_range = 0x4018;
-   machine->writehandler[num_handlers].max_range = 0x5FFF;
-   machine->writehandler[num_handlers].write_func = write_protect;
-   num_handlers++;
-   machine->writehandler[num_handlers].min_range = 0x8000;
-   machine->writehandler[num_handlers].max_range = 0xFFFF;
-   machine->writehandler[num_handlers].write_func = write_protect;
-   num_handlers++;
-   machine->writehandler[num_handlers].min_range = -1;
-   machine->writehandler[num_handlers].max_range = -1;
-   machine->writehandler[num_handlers].write_func = NULL;
-   num_handlers++;
-   ASSERT(num_handlers <= MAX_MEM_HANDLERS);
+   machine->writehandler[num_write_handlers].min_range = 0x4018;
+   machine->writehandler[num_write_handlers].max_range = 0x5FFF;
+   machine->writehandler[num_write_handlers].write_func = write_protect;
+   num_write_handlers++;
+   machine->writehandler[num_write_handlers].min_range = 0x8000;
+   machine->writehandler[num_write_handlers].max_range = 0xFFFF;
+   machine->writehandler[num_write_handlers].write_func = write_protect;
+   num_write_handlers++;
+   machine->writehandler[num_write_handlers].min_range = -1;
+   machine->writehandler[num_write_handlers].max_range = -1;
+   machine->writehandler[num_write_handlers].write_func = NULL;
+   num_write_handlers++;
+
+   ASSERT(num_write_handlers <= MAX_MEM_HANDLERS);
 }
 
 /* raise an IRQ */

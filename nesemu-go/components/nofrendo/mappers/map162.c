@@ -1,6 +1,7 @@
 /*
 ** map162.c
-** mapper 162 and 163 interface
+** Mapper 162 and 163 interface
+** by ducalex
 */
 
 #include <noftypes.h>
